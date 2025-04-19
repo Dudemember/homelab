@@ -1,0 +1,12 @@
+- hosts: all
+  become: true
+  vars_files:
+    - config.yml
+  roles:
+    - common
+    - rotate_ssh_key
+
+- hosts: all
+  become: true
+  roles:
+    - { role: kubernetes, when: install_k8s | default(false) }

@@ -1,0 +1,12 @@
+- name: Check if node is already joined
+  stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_config
+
+- name: Join node to cluster
+  shell: |
+    kubeadm join {{ k8s_control_plane_ip }}:{{ k8s_control_plane_port }} \
+      --token {{ k8s_token }} \
+      --discovery-token-ca-cert-hash {{ k8s_discovery_hash }} \
+      --ignore-preflight-errors=all
+  when: not kubelet_config.stat.exists

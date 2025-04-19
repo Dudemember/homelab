@@ -1,0 +1,28 @@
+- name: Add rook Helm repository
+  shell: |
+    helm repo add rook-release https://charts.rook.io/release
+    helm repo update
+  args:
+    creates: /tmp/.rook_repo_initialized
+
+- name: Mark repo as initialized
+  file:
+    path: /tmp/.rook_repo_initialized
+    state: touch
+
+- name: Ensure rook-ceph namespace exists
+  kubernetes.core.k8s:
+    kind: Namespace
+    name: rook-ceph
+    state: present
+
+- name: Install rook-ceph operator
+  community.kubernetes.helm:
+    name: rook-ceph
+    chart_ref: rook-release/rook-ceph
+    release_namespace: rook-ceph
+    create_namespace: false
+    values:
+      crds.enabled: true
+      csi.enableRbdDriver: true
+      csi.enableCephfsDriver: false

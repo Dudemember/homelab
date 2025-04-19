@@ -1,0 +1,25 @@
+- name: Check if control plane is already initialized
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: k8s_cluster_config
+
+- name: Upload kubeadm config template
+  template:
+    src: kubeadm_config.yml.j2
+    dest: /tmp/kubeadm-config.yaml
+
+- name: Run kubeadm init
+  shell: kubeadm init --config=/tmp/kubeadm-config.yaml
+  args:
+    creates: /etc/kubernetes/admin.conf
+  when: not k8s_cluster_config.stat.exists
+
+- name: Copy kubeconfig to ansible user
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/{{ ansible_user }}/.kube/config
+    remote_src: yes
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: 0600
+  when: not k8s_cluster_config.stat.exists

@@ -1,0 +1,13 @@
+# SSH Access
+ansible_pub_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOkrekckA8LBPDttJLuITRxAsdu23+MIk0qKTBxPoSri ansible@homelab"
+ansible_user: ansible
+
+# Kubernetes cluster networking
+k8s_pod_subnet: "10.244.0.0/16"
+k8s_control_plane_port: 6443
+k8s_control_plane_ip: "192.168.1.10"
+k8s_token: "abcdef.0123456789abcdef"
+k8s_discovery_hash: "sha256:1234567890abcdef..."
+
+# Ceph version for Rook
+ceph_version: ceph/ceph:v17.2.6

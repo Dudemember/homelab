@@ -1,0 +1,5 @@
+- name: Include SSH key setup
+  import_tasks: ssh_key.yml
+
+- name: Include firewall setup
+  import_tasks: firewall.yml
