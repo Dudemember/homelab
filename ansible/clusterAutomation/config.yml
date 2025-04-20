@@ -1,16 +1,33 @@
-# SSH Access
-ansible_pub_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOkrekckA8LBPDttJLuITRxAsdu23+MIk0qKTBxPoSri ansible@homelab"
-ansible_user: ansible
-
-# K8s
-k8s_pod_subnet: "10.244.0.0/16"
+# ─────────── Cluster settings (unchanged) ───────────
 k8s_control_plane_ip: "192.168.1.10"
 k8s_control_plane_port: 6443
 k8s_token: "abcdef.0123456789abcdef"
-k8s_discovery_hash: "sha256:abc..."
+k8s_discovery_hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+k8s_pod_subnet: "10.244.0.0/16"
 
-# Ceph/Rook
-rook_ceph_version: "ceph/ceph:v17.2.6"
-rook_ceph_namespace: "rook-ceph"
-rook_ceph_enable_rbd: true
-rook_ceph_enable_cephfs: false
+# ──────── Per‑node role assignments ────────
+node_roles:
+  node1:
+    - common
+    - rotate_ssh_key
+    - kubernetes
+
+  node2:
+    - common
+    - rotate_ssh_key
+    - kubernetes
+
+  node3:
+    - common
+    - rotate_ssh_key
+    - kubernetes
+
+  node4:
+    - common
+    - rotate_ssh_key
+    - kubernetes
+
+  node5:
+    - common
+    - rotate_ssh_key
+    - kubernetes

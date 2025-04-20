@@ -1,10 +1,10 @@
-- name: Install
+- name: Install prerequisites & container runtime
   import_tasks: install.yml
 
 - name: Initialize control plane if needed
   import_tasks: init_cluster.yml
   when: inventory_hostname == groups['k8s_control_plane'][0]
 
-- name: Join cluster as worker if not control plane
+- name: Join cluster as control plane or worker
   import_tasks: join_cluster.yml
   when: inventory_hostname != groups['k8s_control_plane'][0]

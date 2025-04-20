@@ -2,11 +2,9 @@
   become: true
   vars_files:
     - config.yml
-  roles:
-    - common
-    - rotate_ssh_key
 
-- hosts: all
-  become: true
-  roles:
-    - { role: k8s, when: install_k8s | default(false) }
+  tasks:
+    - name: Run roles assigned to this host
+      include_role:
+        name: "{{ item }}"
+      loop: "{{ node_roles[inventory_hostname] }}"

@@ -1,0 +1,17 @@
+- name: Initialize control plane
+  shell: |
+    kubeadm init \
+      --apiserver-advertise-address={{ ansible_host }} \
+      --control-plane-endpoint={{ k8s_control_plane_ip }}:{{ k8s_control_plane_port }} \
+      --pod-network-cidr={{ k8s_pod_subnet }} \
+      --upload-certs \
+      --token {{ k8s_token }} \
+      --discovery-token-ca-cert-hash {{ k8s_discovery_hash }}
+  args:
+    creates: /etc/kubernetes/admin.conf
+  register: init_out
+  changed_when: "'initialized' in init_out.stdout"
+
+- name: Extract certificate key for control-plane joins
+  set_fact:
+    k8s_certificate_key: "{{ init_out.stdout | regex_search('(?<=certificate-key )[-0-9a-f]+') }}"
