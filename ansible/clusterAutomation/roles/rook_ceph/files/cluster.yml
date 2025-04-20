@@ -5,7 +5,7 @@ metadata:
   namespace: rook-ceph
 spec:
   cephVersion:
-    image: "{{ ceph_version }}"
+    image: "{{ rook_ceph_version }}"
   dataDirHostPath: /var/lib/rook
   mon:
     count: 3

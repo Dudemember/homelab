@@ -9,4 +9,4 @@
 - hosts: all
   become: true
   roles:
-    - { role: kubernetes, when: install_k8s | default(false) }
+    - { role: k8s, when: install_k8s | default(false) }
