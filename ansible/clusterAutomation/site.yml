@@ -4,7 +4,7 @@
     - config.yml
 
   tasks:
-    - name: Run roles assigned to this host
+    - name: Execute roles assigned to this host
       include_role:
         name: "{{ item }}"
       loop: "{{ node_roles[inventory_hostname] }}"

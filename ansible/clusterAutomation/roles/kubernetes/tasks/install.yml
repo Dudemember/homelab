@@ -1,3 +1,25 @@
+- name: Install containerd
+  apt:
+    name: containerd
+    state: present
+    update_cache: yes
+  when: ansible_distribution == "Ubuntu"
+
+- name: Configure containerd
+  command: |
+    mkdir -p /etc/containerd &&
+    containerd config default > /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+  when: ansible_distribution == "Ubuntu"
+
+- name: Restart & enable containerd
+  systemd:
+    name: containerd
+    enabled: true
+    state: restarted
+  when: ansible_distribution == "Ubuntu"
+
 - name: Install Kubernetes dependencies
   apt:
     name:
@@ -29,8 +51,8 @@
       - kubelet
       - kubeadm
       - kubectl
-    state: present
     update_cache: yes
+    state: present
   when: ansible_distribution == "Ubuntu"
 
 - name: Hold Kubernetes versions
