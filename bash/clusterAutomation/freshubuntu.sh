@@ -55,6 +55,11 @@ Description=Weekly APT update & upgrade
 
 [Service]
 Type=oneshot
+# Kill the job if it runs longer than 1 hour
+TimeoutStartSec=1h
+# Make sure we don't try to restart it on failure
+Restart=no
+
 ExecStart=/usr/bin/apt-get update
 ExecStart=/usr/bin/apt-get -y upgrade
 EOF
@@ -107,3 +112,10 @@ echo "✔ Core setup complete:
   • Sleep/hibernate disabled  
   • Weekly apt timer  
   • /dev/sda formatted & mounted at /data"
+
+# 7) Show SSH connection command
+IP=$(hostname -I | awk '{print $1}')
+echo
+echo "=== SSH access ==="
+echo "ssh ${USER}@${IP}"
+echo
