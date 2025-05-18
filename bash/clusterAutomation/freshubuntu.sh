@@ -14,12 +14,12 @@ if [[ ! -s "$PASS_FILE" ]]; then
 fi
 PASS=$(<"$PASS_FILE")
 
-# 1) Install & enable SSH, parted
+# 1) Install & enable SSH, NetworkManager & parted
 apt-get update
-apt-get install -y openssh-server parted
-systemctl enable --now ssh
+apt-get install -y openssh-server network-manager parted
+systemctl enable --now ssh NetworkManager
 
-# 2) Create labuser + passwordless sudo  
+# 2) Create labuser + passwordless sudo
 if ! id "$USER" &>/dev/null; then
   useradd -m -s /bin/bash -G sudo "$USER"
   echo "$USER:$PASS" | chpasswd
@@ -32,7 +32,7 @@ chmod 0440 /etc/sudoers.d/90_${USER}
 # 3) Force UTC timezone
 timedatectl set-timezone UTC
 
-# 4) Disable sleep/hibernate/power-key
+# 4) Disable suspend/hibernate/power-key
 systemctl mask sleep.target suspend.target \
                hibernate.target hybrid-sleep.target
 mkdir -p /etc/systemd/logind.conf.d
@@ -75,8 +75,7 @@ systemctl enable --now weekly-apt.timer
 # 6) Partition, format & mount /dev/sda → /data
 if [[ ! -b "${DEVICE}1" ]]; then
   parted -s "$DEVICE" mklabel gpt mkpart primary ext4 0% 100%
-  partprobe "$DEVICE"
-  sleep 1
+  partprobe "$DEVICE"; sleep 1
   mkfs.ext4 -F "${DEVICE}1"
 fi
 
@@ -89,45 +88,37 @@ if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
-# 7) Freeze your current DHCP lease as a static NM connection
+# detect interface
+IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
 
-# detect your primary interface
-IFACE=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
+# grab the DHCP values
+ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
+GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
+DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd, -)
 
-# find the active NM connection on that iface
-CONN=$(nmcli -t -f NAME,DEVICE connection show --active \
-       | awk -F: -v dev="$IFACE" '$2==dev {print $1; exit}')
+# write a single netplan file
+cat >/etc/netplan/00-static.yaml <<EOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${IFACE}:
+      dhcp4: no
+      addresses:
+        - ${ADDR}
+      nameservers:
+        addresses: [${DNS}]
+      routes:
+        - to: default
+          via: ${GATEWAY}
+EOF
 
-# fallback to the first ethernet profile if none active
-if [[ -z "$CONN" ]]; then
-  CONN=$(nmcli -t -f NAME,TYPE connection show \
-         | awk -F: '$2=="ethernet" {print $1; exit}')
-fi
+# lock it down and apply
+chown root:root /etc/netplan/00-static.yaml
+chmod 0600     /etc/netplan/00-static.yaml
+netplan apply
 
-# only convert if it’s still DHCP
-if [[ "$(nmcli -g ipv4.method connection show "$CONN")" != manual ]]; then
-  # grab the live lease values straight from the device
-  IP=$(nmcli -g IP4.ADDRESS device show "$IFACE")
-  GW=$(nmcli -g IP4.GATEWAY device show "$IFACE")
-  DNS=$(nmcli -g IP4.DNS     device show "$IFACE" | paste -sd, -)
-
-  # apply them as a manual/static profile
-  nmcli connection modify "$CONN" \
-    ipv4.method manual \
-    ipv4.addresses "$IP" \
-    ipv4.gateway   "$GW" \
-    ipv4.dns       "$DNS" \
-    connection.autoconnect yes
-
-  # bring it back up
-  nmcli connection up "$CONN"
-
-  echo "🔒 Locked $CONN to manual IP $IP (gw: $GW, dns: $DNS)"
-else
-  echo "✔ $CONN is already manual"
-fi
-
-# 8) Show SSH connection command
+# 8) Show SSH command
 echo
 echo "=== SSH access ==="
 echo "ssh ${USER}@${IP}"
