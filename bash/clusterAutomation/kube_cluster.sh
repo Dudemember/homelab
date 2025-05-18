@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
-set -uo pipefail
-# NOTE: we omit -e so failures don’t abort the whole run
+set -euo pipefail
 
-# ——— 0) Load your localvars ———
 LOCALVARS="./localvars"
-if [[ ! -f "$LOCALVARS" ]]; then
-  echo "ERROR: '$LOCALVARS' not found" >&2
-  exit 1
-fi
+# strip any stray Windows CR (\r) in‑place
+#sed -i 's/\r$//' "$LOCALVARS"
+
+# now source as usual
 # shellcheck disable=SC1090
 source "$LOCALVARS"
 
-# ——— 1) Validate required vars ———
-if [[ -z "${NODES+x}" ]] || (( ${#NODES[@]} == 0 )); then
-  echo "ERROR: NODES array is not defined or empty in '$LOCALVARS'" >&2
+# validate required vars
+: "${DEVICE:?DEVICE must be set in localvars}"
+: "${MOUNTPOINT:?MOUNTPOINT must be set in localvars}"
+: "${POD_CIDR:?POD_CIDR must be set in localvars}"
+: "${USER:?USER must be set in localvars}"
+if [[ ${#NODES[@]} -eq 0 ]]; then
+  echo "ERROR: NODES array must be defined in localvars (e.g. NODES=(192.168.1.1))" >&2
   exit 1
 fi
-: "${USER:?   USER must be set in $LOCALVARS}"
-: "${POD_CIDR:? POD_CIDR must be set in $LOCALVARS}"
-
-# ——— 2) Configuration from localvars ———
+# ——— 2) Find Master Node ———
 MASTER="${NODES[0]}"
 
 # ——— 3) State tracking ———
