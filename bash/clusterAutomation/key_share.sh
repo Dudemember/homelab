@@ -1,39 +1,104 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1) load your localvars (must define USER, NODES array, and PASS_FILE if you want to verify it)
-LOCALVARS="./localvars"
+# Path to your localvars file
+LOCALVARS=./localvars
 if [[ ! -r $LOCALVARS ]]; then
   echo "ERROR: cannot read $LOCALVARS" >&2
   exit 1
 fi
+# Load variables (USER, NODES[], PASS_FILE, MY_SSH_KEY, OVERWRITE_MY_SSH_KEY)
 # shellcheck disable=SC1090
 source "$LOCALVARS"
 
 : "${USER:?USER must be set in localvars}"
-: "${#NODES[@]:?NODES array must be defined and non-empty in localvars}"
+: "${PASS_FILE:?PASS_FILE must be set in localvars}"
+if [[ ! -r $PASS_FILE ]]; then
+  echo "ERROR: cannot read PASS_FILE ($PASS_FILE)" >&2
+  exit 1
+fi
+# Read password into memory
+PASS="$(<"$PASS_FILE")"
 
-# 2) define key paths
-KEY="$HOME/.ssh/${USER}_ed25519"
-PUB="$KEY.pub"
-
-# 3) generate key if needed
-if [[ -f "$KEY" ]]; then
-  echo "✔️  Using existing key: $KEY"
-else
-  echo "🔑 Generating new ed25519 keypair at $KEY (no passphrase)…"
-  ssh-keygen -t ed25519 -f "$KEY" -C "${USER}@home-lab" -N ""
+# Validate NODES array
+if ! declare -p NODES &>/dev/null; then
+  echo "ERROR: NODES array must be defined in localvars" >&2
+  exit 1
+fi
+if (( ${#NODES[@]} == 0 )); then
+  echo "ERROR: NODES array must contain at least one element" >&2
+  exit 1
 fi
 
-# 4) distribute to each node
-echo
-echo "🔄 Copying public key to each node (you’ll be prompted for the password one last time)…"
+# 1) Determine SSH key path up front
+if [[ -n "${MY_SSH_KEY:-}" ]]; then
+  # Expand leading '~'
+  KEY_PATH="${MY_SSH_KEY/#\~/$HOME}"
+  echo "✔ Using existing MY_SSH_KEY from localvars: $MY_SSH_KEY"
+else
+  # Remove any existing MY_SSH_KEY entries and set a default
+  sed -i '/^MY_SSH_KEY=/d' "$LOCALVARS"
+  printf "\nMY_SSH_KEY=\"~/.ssh/${USER}_ed25519\"\n" >> "$LOCALVARS"
+  KEY_PATH="$HOME/.ssh/${USER}_ed25519"
+  echo "🔧 Set MY_SSH_KEY=\"~/.ssh/${USER}_ed25519\" in localvars"
+fi
+PUB_PATH="$KEY_PATH.pub"
+
+# 2) Handle overwrite flag
+FORCE="${OVERWRITE_MY_SSH_KEY:-false}"
+if [[ $FORCE == true ]]; then
+  echo "⚠️  OVERWRITE_MY_SSH_KEY=true: removing old key files"
+  rm -f "$KEY_PATH" "$PUB_PATH"
+  # Reset the flag in localvars
+  sed -i '/^OVERWRITE_MY_SSH_KEY=/d' "$LOCALVARS"
+  printf "\nOVERWRITE_MY_SSH_KEY=false\n" >> "$LOCALVARS"
+fi
+
+# 3) Generate key if missing
+if [[ ! -f "$KEY_PATH" ]]; then
+  echo "🔑 Generating new ed25519 keypair at $KEY_PATH (no passphrase)…"
+  mkdir -p "$(dirname "$KEY_PATH")"
+  ssh-keygen -t ed25519 -f "$KEY_PATH" -C "${USER}@home-lab" -N ""
+else
+  echo "✔ SSH key exists at $KEY_PATH"
+fi
+
+# 4) Create SSH_ASKPASS helper
+ASKPASS=$(mktemp)
+chmod +x "$ASKPASS"
+cat >"$ASKPASS" <<EOF
+#!/usr/bin/env sh
+echo "$PASS"
+EOF
+
+# 5) Distribute to each node
+
+echo "🔄 Distributing public key to each node…"
 for host in "${NODES[@]}"; do
   printf " → %s: " "$host"
-  # ssh-copy-id will ask you for the password interactively
-  ssh-copy-id -i "$PUB" -o StrictHostKeyChecking=no "$USER@$host"
+  # Try key-based auth first
+  if ssh -i "$KEY_PATH" \
+         -o BatchMode=yes \
+         -o ConnectTimeout=5 \
+         -o StrictHostKeyChecking=no \
+         -o UserKnownHostsFile=/dev/null \
+       "$USER@$host" true &>/dev/null; then
+    echo "already installed"
+  else
+    # Use SSH_ASKPASS with setsid to feed password non-interactively
+    DISPLAY=none SSH_ASKPASS="$ASKPASS" \
+      setsid ssh-copy-id -i "$PUB_PATH" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        "$USER@$host" \
+        </dev/null &>/dev/null \
+      && echo "installed" || echo "FAILED"
+  fi
 done
 
-echo
-echo "✅ All done. You can now SSH into any node without a password:"
-echo "   ssh -i $KEY $USER@<node-ip>"
+# 6) Cleanup
+rm -f "$ASKPASS"
+
+
+echo "✅ Done. Next time, SSH with:"
+echo "   ssh -i \"$KEY_PATH\" $USER@<node-ip>"
