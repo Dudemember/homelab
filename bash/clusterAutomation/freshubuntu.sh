@@ -90,22 +90,21 @@ if ! mountpoint -q "$MOUNTPOINT"; then
 fi
 
 # 7) Freeze your current DHCP lease as a static NM connection
-#    (idempotent—only runs if still DHCP)
 
 # detect your primary interface
 IFACE=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
 
 # find the active NM connection on that iface
 CONN=$(nmcli -t -f NAME,DEVICE connection show --active \
-       | awk -F: -v if="$IFACE" '$2==if{print $1; exit}')
+       | awk -F: -v dev="$IFACE" '$2==dev {print $1; exit}')
 
-# fallback to the first ethernet profile if nothing active
+# fallback to the first ethernet profile if none active
 if [[ -z "$CONN" ]]; then
   CONN=$(nmcli -t -f NAME,TYPE connection show \
-         | awk -F: '$2=="ethernet"{print $1; exit}')
+         | awk -F: '$2=="ethernet" {print $1; exit}')
 fi
 
-# check current method
+# only convert if it’s still DHCP
 if [[ "$(nmcli -g ipv4.method connection show "$CONN")" != manual ]]; then
   # grab the live lease values straight from the device
   IP=$(nmcli -g IP4.ADDRESS device show "$IFACE")
