@@ -1,55 +1,72 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
 set -euo pipefail
 
-USERNAME="ubuntu"
-PUB_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOkrekckA8LBPDttJLuITRxAsdu23+MIk0qKTBxPoSri ansible@homelab"
+USER=labuser
+PASS='CHANGE_ME'    # ← change this before running
 
-echo "[+] Ensuring user '$USERNAME' exists and is configured for SSH access..."
+# 1. SSH server
+apt-get update
+apt-get install -y openssh-server
+systemctl enable --now ssh
 
-# Create user if not exists
-if ! id "$USERNAME" &>/dev/null; then
-  adduser --disabled-password --gecos "" "$USERNAME"
-  usermod -aG sudo "$USERNAME"
+# 2. labuser + sudo
+if ! id "$USER" &>/dev/null; then
+  useradd -m -s /bin/bash -G sudo "$USER"
+  echo "${USER}:${PASS}" | chpasswd
 fi
+cat >/etc/sudoers.d/90_${USER} <<EOF
+${USER} ALL=(ALL) NOPASSWD:ALL
+EOF
+chmod 0440 /etc/sudoers.d/90_${USER}
 
-# Ensure sudo group membership
-if ! id "$USERNAME" | grep -q '\bsudo\b'; then
-  usermod -aG sudo "$USERNAME"
-fi
+# 3. Force UTC timezone
+timedatectl set-timezone UTC
 
-# Set up .ssh directory and authorized_keys
-SSH_DIR="/home/$USERNAME/.ssh"
-AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
+# 4. Disable all sleep/hibernate/power-key actions
+systemctl mask sleep.target suspend.target \
+               hibernate.target hybrid-sleep.target
 
-mkdir -p "$SSH_DIR"
-touch "$AUTHORIZED_KEYS"
+mkdir -p /etc/systemd/logind.conf.d
+cat >/etc/systemd/logind.conf.d/ignore-power.conf <<EOF
+[Login]
+HandleSuspendKey=ignore
+HandleHibernateKey=ignore
+HandlePowerKey=ignore
+HandleLidSwitch=ignore
+HandleLidSwitchDocked=ignore
+IdleAction=ignore
+EOF
+systemctl restart systemd-logind
 
-# Ensure pub key is present (append only if not already there)
-if ! grep -qxF "$PUB_KEY" "$AUTHORIZED_KEYS"; then
-  echo "$PUB_KEY" >> "$AUTHORIZED_KEYS"
-fi
+# 5. Weekly APT upgrade via systemd timer
+cat >/etc/systemd/system/weekly-apt-upgrade.service <<EOF
+[Unit]
+Description=Weekly APT update & upgrade
 
-# Set correct permissions
-chmod 700 "$SSH_DIR"
-chmod 600 "$AUTHORIZED_KEYS"
-chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/apt-get update
+ExecStart=/usr/bin/apt-get -y upgrade
+EOF
 
-# Set up passwordless sudo if not already set
-SUDOERS_FILE="/etc/sudoers.d/$USERNAME"
-echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_FILE"
-chmod 440 "$SUDOERS_FILE"
+cat >/etc/systemd/system/weekly-apt-upgrade.timer <<EOF
+[Unit]
+Description=Run weekly APT update & upgrade
 
-# Harden SSH settings (safely)
-sed -i 's/^#*PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i 's/^#*PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
-systemctl restart sshd
+[Timer]
+OnCalendar=Mon *-*-* 12:00:00
+Persistent=true
 
-# Full system update (noninteractive)
-echo "[+] Performing system upgrade..."
-apt update
-DEBIAN_FRONTEND=noninteractive apt full-upgrade -y
-apt autoremove -y
-apt clean
+[Install]
+WantedBy=timers.target
+EOF
 
-echo "[✓] Node is configured and safe to re-run anytime."
+systemctl daemon-reload
+systemctl enable --now weekly-apt-upgrade.timer
+
+echo "✔ setup complete:
+  • SSH enabled
+  • user '$USER' with passwordless sudo
+  • timezone UTC
+  • sleep/hibernate/power-key disabled
+  • weekly apt update & upgrade (Mon 12:00 UTC)"
