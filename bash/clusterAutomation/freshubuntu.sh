@@ -74,18 +74,32 @@ EOF
 systemctl daemon-reload
 systemctl enable --now weekly-apt-upgrade.timer
 
-# 6) Partition, format & mount /dev/sda → /data
-parted -s "$DEVICE" mklabel gpt \
-       mkpart primary ext4 0% 100%
-partprobe "$DEVICE"
-sleep 1
-mkfs.ext4 -F "${DEVICE}1"
+# 6) idempotent: Partition, format & mount /dev/sda → /data
+if [ ! -b "${DEVICE}1" ]; then
+  parted -s "$DEVICE" mklabel gpt \
+         mkpart primary ext4 0% 100%
+  partprobe "$DEVICE"
+  sleep 1
+  mkfs.ext4 -F "${DEVICE}1"
+fi
+
+# ensure mountpoint exists
 mkdir -p "$MOUNTPOINT"
+
+# grab UUID
 UUID=$(blkid -s UUID -o value "${DEVICE}1")
-grep -q "$UUID" /etc/fstab || cat >>/etc/fstab <<EOF
+
+# add fstab entry if missing
+if ! grep -q "UUID=${UUID}" /etc/fstab; then
+  cat >>/etc/fstab <<EOF
 UUID=${UUID} ${MOUNTPOINT} ext4 defaults,nofail 0 2
 EOF
-mount "$MOUNTPOINT"
+fi
+
+# mount if not already
+if ! mountpoint -q "$MOUNTPOINT"; then
+  mount "$MOUNTPOINT"
+fi
 
 echo "✔ Core setup complete:
   • SSH & labuser w/ sudo  
