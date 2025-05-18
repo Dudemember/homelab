@@ -89,29 +89,43 @@ if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
-# 7) Freeze current DHCP lease as a manual NM connection
+# 7) Freeze your current DHCP lease as a static NM connection
+#    (idempotent—only runs if still DHCP)
+
+# detect your primary interface
 IFACE=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
+
+# find the active NM connection on that iface
 CONN=$(nmcli -t -f NAME,DEVICE connection show --active \
-       | awk -F: -v iface="$IFACE" '$2==iface{print $1; exit}')
+       | awk -F: -v if="$IFACE" '$2==if{print $1; exit}')
+
+# fallback to the first ethernet profile if nothing active
 if [[ -z "$CONN" ]]; then
-  # fallback to first ethernet profile
   CONN=$(nmcli -t -f NAME,TYPE connection show \
          | awk -F: '$2=="ethernet"{print $1; exit}')
 fi
 
+# check current method
 if [[ "$(nmcli -g ipv4.method connection show "$CONN")" != manual ]]; then
-  IFS=$'\n' read -r IP GW DNS <<<"$(nmcli -g ipv4.addresses,ipv4.gateway,ipv4.dns connection show "$CONN")"
+  # grab the live lease values straight from the device
+  IP=$(nmcli -g IP4.ADDRESS device show "$IFACE")
+  GW=$(nmcli -g IP4.GATEWAY device show "$IFACE")
+  DNS=$(nmcli -g IP4.DNS     device show "$IFACE" | paste -sd, -)
+
+  # apply them as a manual/static profile
   nmcli connection modify "$CONN" \
     ipv4.method manual \
     ipv4.addresses "$IP" \
     ipv4.gateway   "$GW" \
     ipv4.dns       "$DNS" \
     connection.autoconnect yes
+
+  # bring it back up
   nmcli connection up "$CONN"
+
   echo "🔒 Locked $CONN to manual IP $IP (gw: $GW, dns: $DNS)"
 else
-  IP=$(nmcli -g ipv4.addresses connection show "$CONN")
-  echo "✔ $CONN already manual at $IP"
+  echo "✔ $CONN is already manual"
 fi
 
 # 8) Show SSH connection command
