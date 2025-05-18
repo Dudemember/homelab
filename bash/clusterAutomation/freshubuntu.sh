@@ -46,7 +46,7 @@ HandleLidSwitch=ignore
 HandleLidSwitchDocked=ignore
 IdleAction=ignore
 EOF
-systemctl restart systemd-logind
+systemctl reload systemd-logind
 
 # 5) Weekly APT update & upgrade via systemd timer
 cat >/etc/systemd/system/weekly-apt-upgrade.service <<EOF
