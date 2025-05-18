@@ -2,14 +2,16 @@
 set -euo pipefail
 
 USER=labuser
-PASS='CHANGE_ME'    # ←change this before running
+PASS='CHANGE_ME'    # ← set before running
+DEVICE=/dev/sda
+MOUNTPOINT=/data
 
-# 1. SSH server
+# 1) Install SSH + parted
 apt-get update
-apt-get install -y openssh-server
+apt-get install -y openssh-server parted
 systemctl enable --now ssh
 
-# 2. labuser + sudo
+# 2) labuser + passwordless sudo
 if ! id "$USER" &>/dev/null; then
   useradd -m -s /bin/bash -G sudo "$USER"
   echo "${USER}:${PASS}" | chpasswd
@@ -19,13 +21,12 @@ ${USER} ALL=(ALL) NOPASSWD:ALL
 EOF
 chmod 0440 /etc/sudoers.d/90_${USER}
 
-# 3. Force UTC timezone
+# 3) Force UTC timezone
 timedatectl set-timezone UTC
 
-# 4. Disable all sleep/hibernate/power-key actions
+# 4) Disable suspend/hibernate/power‑key
 systemctl mask sleep.target suspend.target \
                hibernate.target hybrid-sleep.target
-
 mkdir -p /etc/systemd/logind.conf.d
 cat >/etc/systemd/logind.conf.d/ignore-power.conf <<EOF
 [Login]
@@ -38,7 +39,7 @@ IdleAction=ignore
 EOF
 systemctl restart systemd-logind
 
-# 5. Weekly APT upgrade via systemd timer
+# 5) Weekly APT via systemd timer
 cat >/etc/systemd/system/weekly-apt-upgrade.service <<EOF
 [Unit]
 Description=Weekly APT update & upgrade
@@ -64,9 +65,24 @@ EOF
 systemctl daemon-reload
 systemctl enable --now weekly-apt-upgrade.timer
 
-echo "✔ setup complete:
-  • SSH enabled
-  • user '$USER' with passwordless sudo
-  • timezone UTC
-  • sleep/hibernate/power-key disabled
-  • weekly apt update & upgrade (Mon 12:00 UTC)"
+# 6) Partition, format & mount /dev/sda → /data
+parted -s "$DEVICE" mklabel gpt \
+       mkpart primary ext4 0% 100%
+partprobe "$DEVICE"
+sleep 1
+mkfs.ext4 -F "${DEVICE}1"
+mkdir -p "$MOUNTPOINT"
+UUID=$(blkid -s UUID -o value "${DEVICE}1")
+grep -q "$UUID" /etc/fstab || cat >>/etc/fstab <<EOF
+UUID=${UUID} ${MOUNTPOINT} ext4 defaults,nofail 0 2
+EOF
+mount "$MOUNTPOINT"
+
+echo "✔ core setup complete:
+  • SSH & labuser w/ sudo  
+  • UTC timezone  
+  • Sleep/hibernate disabled  
+  • Weekly apt timer  
+  • /dev/sda formatted & mounted at /data
+
+Next: install Kubernetes & container runtime, then add bind‑mounts for /var/lib/containerd and /var/lib/kubelet off /data."
