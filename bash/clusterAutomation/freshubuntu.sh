@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ----- Configuration -----
+# ----- Configuration ----- also in localvars for referance
 USER=labuser
 PASS_FILE="$(dirname "$0")/labuser.pass"
 DEVICE=/dev/sda

@@ -1,54 +1,182 @@
 #!/usr/bin/env bash
+set -uo pipefail
+# NOTE: we omit -e so failures don’t abort the whole run
+
+# ——— 0) Load your localvars ———
+LOCALVARS="./localvars"
+if [[ ! -f "$LOCALVARS" ]]; then
+  echo "ERROR: '$LOCALVARS' not found" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$LOCALVARS"
+
+# ——— 1) Validate required vars ———
+if [[ -z "${NODES+x}" ]] || (( ${#NODES[@]} == 0 )); then
+  echo "ERROR: NODES array is not defined or empty in '$LOCALVARS'" >&2
+  exit 1
+fi
+: "${USER:?   USER must be set in $LOCALVARS}"
+: "${POD_CIDR:? POD_CIDR must be set in $LOCALVARS}"
+
+# ——— 2) Configuration from localvars ———
+MASTER="${NODES[0]}"
+
+# ——— 3) State tracking ———
+unreachable=()
+bootstrap_failed=()
+join_failed=()
+init_failed=false
+
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no)
+
+# ——— 4) Functions ———
+bootstrap_node() {
+  local host=$1
+  ssh "${SSH_OPTS[@]}" "$USER@$host" sudo bash <<'EOF'
 set -e
 
-nodes=(192.168.1.101 192.168.1.102 192.168.1.103 192.168.1.104 192.168.1.105)
-user=ubuntu
-
-# 1) bootstrap each Ubuntu node
-for h in "${nodes[@]}"; do
-  ssh-copy-id "$user@$h"
-  ssh "$user@$h" sudo bash <<'EOF'
+# install & prep
 apt-get update
-apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
-echo "deb [arch=$(dpkg --print-architecture)] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-  > /etc/apt/sources.list.d/docker.list
-curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" \
-  > /etc/apt/sources.list.d/kubernetes.list
-apt-get update
-apt-get install -y containerd.io kubelet kubeadm kubectl
+apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release \
+                   containerd.io kubelet kubeadm kubectl
 swapoff -a
 sed -i '/ swap /s/^/#/' /etc/fstab
+
+# kernel networking
 modprobe br_netfilter
-echo -e "net.bridge.bridge-nf-call-iptables=1\nnet.ipv4.ip_forward=1" \
-  > /etc/sysctl.d/99-k8s.conf
+cat <<SYSCTL >/etc/sysctl.d/99-k8s.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.ipv4.ip_forward                 = 1
+SYSCTL
 sysctl --system
-EOF
+
+# prepare data dirs
+for D in containerd kubelet; do
+  mkdir -p /data/$D
+  chown root:root /data/$D
+  # bind‑mount it over the default path
+  mkdir -p /var/lib/$D
+  mount --bind /data/$D /var/lib/$D || true
+  grep -q "/data/$D /var/lib/$D" /etc/fstab \
+    || echo "/data/$D /var/lib/$D none bind 0 0" >> /etc/fstab
 done
 
-master=${nodes[0]}
+# reconfigure containerd
+containerd config default | \
+  sed -e 's#root =.*#root = "/data/containerd"#' \
+      -e 's#state =.*#state = "/data/containerd/run"#' \
+  > /etc/containerd/config.toml
+systemctl restart containerd
 
-# 2) init control‑plane + CNI + Argo CD (once)
-ssh "$user@$master" bash <<'EOF'
+# point kubelet at /data
+echo 'KUBELET_EXTRA_ARGS="--root-dir=/data/kubelet"' > /etc/default/kubelet
+systemctl daemon-reload
+
+EOF
+}
+
+init_master() {
+  ssh "${SSH_OPTS[@]}" "$USER@$MASTER" sudo bash <<EOF
+set -e
 if [ ! -f /etc/kubernetes/admin.conf ]; then
-  kubeadm init --pod-network-cidr=10.244.0.0/16 \
-    --apiserver-advertise-address=$master
-  mkdir -p \$HOME/.kube
-  cp -i /etc/kubernetes/admin.conf \$HOME/.kube/config
-  chown \$(id -u):\$(id -g) \$HOME/.kube/config
+  cat <<KADM > /etc/kubeadm-config.yaml
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: ${MASTER}
+  bindPort: 6443
+nodeRegistration:
+  kubeletExtraArgs:
+    root-dir: /data/kubelet
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+networking:
+  podSubnet: "${POD_CIDR}"
+etcd:
+  local:
+    dataDir: /data/etcd
+KADM
+
+  kubeadm init --config /etc/kubeadm-config.yaml
+
+  mkdir -p /home/${USER}/.kube
+  cp -i /etc/kubernetes/admin.conf /home/${USER}/.kube/config
+  chown ${USER}:${USER} /home/${USER}/.kube/config
+
+  # install networking & Argo CD
   kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
   kubectl create namespace argocd || true
   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 fi
 EOF
+}
 
-# 3) join any workers not yet joined
-join=$(ssh "$user@$master" kubeadm token create --print-join-command)
-for h in "${nodes[@]:1}"; do
-  ssh "$user@$h" bash -c "if [ ! -f /etc/kubernetes/kubelet.conf ]; then sudo $join; fi"
+join_worker() {
+  local host=$1
+  ssh "${SSH_OPTS[@]}" "$USER@$MASTER" sudo kubeadm token create --print-join-command 2>/dev/null | \
+    ssh "${SSH_OPTS[@]}" "$USER@$host" sudo bash -c '
+      if [ ! -f /etc/kubernetes/kubelet.conf ]; then
+        bash
+      fi
+    '
+}
+
+# ——— 5) Bootstrap all nodes ———
+for h in "${NODES[@]}"; do
+  printf "> %s: " "$h"
+  if ! ssh "${SSH_OPTS[@]}" "$USER@$h" true &>/dev/null; then
+    echo "unreachable"
+    unreachable+=("$h")
+    continue
+  fi
+
+  if bootstrap_node "$h"; then
+    echo "bootstrapped"
+  else
+    echo "bootstrap FAILED"
+    bootstrap_failed+=("$h")
+  fi
 done
 
-# 4) show you how to reach the Argo CD UI
-printf "\nssh -L 8080:localhost:443 %s@%s &\nopen http://localhost:8080\n" \
-  "$user" "$master"
+# ——— 6) Init master ———
+if [[ " ${unreachable[*]} " =~ " ${MASTER} " ]] || [[ " ${bootstrap_failed[*]} " =~ " ${MASTER} " ]]; then
+  echo "→ skipping master init (unready)"
+  init_failed=true
+else
+  printf "> initializing master: "
+  if init_master; then
+    echo "OK"
+  else
+    echo "FAILED"
+    init_failed=true
+  fi
+fi
+
+# ——— 7) Join workers ———
+for h in "${NODES[@]:1}"; do
+  if [[ " ${unreachable[*]} " =~ " ${h} " ]] || [[ " ${bootstrap_failed[*]} " =~ " ${h} " ]]; then
+    continue
+  fi
+
+  printf "> joining %s: " "$h"
+  if join_worker "$h"; then
+    echo "OK"
+  else
+    echo "FAILED"
+    join_failed+=("$h")
+  fi
+done
+
+# ——— 8) Summary ———
+echo
+(( ${#unreachable[@]}    )) && printf "Unreachable:      %s\n" "${unreachable[*]}"
+(( ${#bootstrap_failed[@]} )) && printf "Bootstrap failed: %s\n" "${bootstrap_failed[*]}"
+init_failed            && echo    "Master init:      FAILED"
+(( ${#join_failed[@]}   )) && printf "Join failed:      %s\n" "${join_failed[*]}"
+
+echo
+echo "To access Argo CD UI (if init succeeded):"
+echo "  ssh -L 8080:localhost:443 ${USER}@${MASTER} &"
+echo "  open http://localhost:8080"
