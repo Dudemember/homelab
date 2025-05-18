@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ----- Configuration -----
 USER=labuser
-PASS='CHANGE_ME'    # ← set before running
+# The file in the script’s directory that contains ONLY the password for $USER
+PASS_FILE="$(dirname "$0")/labuser.pass"
 DEVICE=/dev/sda
 MOUNTPOINT=/data
+
+# Read password
+if [[ ! -s "$PASS_FILE" ]]; then
+  echo "ERROR: password file '$PASS_FILE' not found or empty" >&2
+  exit 1
+fi
+PASS="$(< "$PASS_FILE")"
 
 # 1) Install SSH + parted
 apt-get update
@@ -39,7 +48,7 @@ IdleAction=ignore
 EOF
 systemctl restart systemd-logind
 
-# 5) Weekly APT via systemd timer
+# 5) Weekly APT update & upgrade via systemd timer
 cat >/etc/systemd/system/weekly-apt-upgrade.service <<EOF
 [Unit]
 Description=Weekly APT update & upgrade
@@ -78,11 +87,9 @@ UUID=${UUID} ${MOUNTPOINT} ext4 defaults,nofail 0 2
 EOF
 mount "$MOUNTPOINT"
 
-echo "✔ core setup complete:
+echo "✔ Core setup complete:
   • SSH & labuser w/ sudo  
   • UTC timezone  
   • Sleep/hibernate disabled  
   • Weekly apt timer  
-  • /dev/sda formatted & mounted at /data
-
-Next: install Kubernetes & container runtime, then add bind‑mounts for /var/lib/containerd and /var/lib/kubelet off /data."
+  • /dev/sda formatted & mounted at /data"
