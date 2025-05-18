@@ -2,7 +2,7 @@
 set -euo pipefail
 
 USER=labuser
-PASS='CHANGE_ME'    # ← change this before running
+PASS='CHANGE_ME'    # ←change this before running
 
 # 1. SSH server
 apt-get update
