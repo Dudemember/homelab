@@ -119,6 +119,8 @@ chmod 0600     /etc/netplan/00-static.yaml
 netplan apply
 
 # 8) Show SSH command
+apt-get update
+apt-get upgrade -y
 echo
 echo "=== SSH access ==="
 echo "ssh ${USER}@${ADDR}"
