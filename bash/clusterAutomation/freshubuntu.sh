@@ -89,18 +89,20 @@ if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
-# 7) Snapshot DHCP lease into Netplan static config
+# 7) Snapshot DHCP lease into Netplan static config (with DNS) and fix resolv.conf
 NETPLAN_FILE=/etc/netplan/00-installer-config.yaml
+
 if [[ ! -f "$NETPLAN_FILE" ]]; then
-  # detect primary interface
+  # 1) detect primary interface
   IFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
 
-  # grab current IPv4/CIDR, gateway, DNS
+  # 2) grab current IPv4/CIDR, gateway, DNS servers
   ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
   GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
+  # comma‑separated list, e.g. "192.168.1.1,8.8.8.8"
   DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd, -)
 
-  # write netplan file
+  # 3) write netplan file with nameservers block
   cat >"$NETPLAN_FILE" <<EOF
 network:
   version: 2
@@ -113,15 +115,19 @@ network:
       nameservers:
         addresses: [${DNS}]
       routes:
-        - to: default
+        - to: 0.0.0.0/0
           via: $GATEWAY
 EOF
 
-  # secure & apply
+  # 4) tighten perms & apply
   chown root:root "$NETPLAN_FILE"
   chmod 0600     "$NETPLAN_FILE"
   netplan apply
-  echo "🔒 Static IP locked: $ADDR on $IFACE"
+
+  # 5) point resolv.conf at the right file so DNS works
+  ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+
+  echo "🔒 Static IP + DNS locked: $ADDR on $IFACE (gw: $GATEWAY, dns: $DNS)"
 fi
 
 # 8) Show SSH command
