@@ -96,38 +96,36 @@ if ! mountpoint -q "$MOUNTPOINT"; then
 fi
 
 # 7) Convert current DHCP lease into a manual NM connection
-#    (runs only once; safe to re-run)
-if ! nmcli -t -f ipv4.method connection show | grep -q manual; then
-  apt-get install -y network-manager
-  systemctl enable --now NetworkManager
+# 1) detect outbound interface
+IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 
-  # detect primary interface and its active connection
-  IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
-  CONN=$(nmcli -t -f NAME,DEVICE connection show --active \
-         | awk -F: -v if="$IFACE" '$2==if{print $1; exit}')
+# 2) snapshot current DHCP lease
+ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
+GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
+DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd, -)
 
-  # fallback to the first ethernet profile if none active
-  if [[ -z "$CONN" ]]; then
-    CONN=$(nmcli -t -f NAME,TYPE connection show \
-           | awk -F: '$2=="ethernet"{print $1; exit}')
-  fi
+# 3) write Netplan file
+cat >/etc/netplan/00-installer-config.yaml <<EOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    $IFACE:
+      dhcp4: no
+      addresses:
+        - $ADDR
+      nameservers:
+        addresses: [${DNS}]
+      routes:
+        - to: default
+          via: $GATEWAY
+EOF
 
-  # grab current lease info
-  ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
-  GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
-  DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd" " -)
-
-  # apply manual settings
-  nmcli connection modify "$CONN" \
-    ipv4.method manual \
-    ipv4.addresses "$ADDR" \
-    ipv4.gateway "$GATEWAY" \
-    ipv4.dns "$DNS" \
-    connection.autoconnect yes
-
-  nmcli connection up "$CONN"
-  echo "🔒 NM manual IP locked: $ADDR on $IFACE"
-fi
+# 4) secure & apply
+chown root:root /etc/netplan/00-installer-config.yaml
+chmod 0600   /etc/netplan/00-installer-config.yaml
+netplan apply
+echo "📡 Static IP set: $ADDR on $IFACE (gw: $GATEWAY, dns: $DNS)"
 
 echo "✔ Core setup complete:
   • SSH & labuser w/ sudo  
