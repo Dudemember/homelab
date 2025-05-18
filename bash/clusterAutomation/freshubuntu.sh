@@ -89,48 +89,33 @@ if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
-# 7) Snapshot DHCP lease into Netplan static config (with DNS) and fix resolv.conf
-NETPLAN_FILE=/etc/netplan/00-installer-config.yaml
-
-if [[ ! -f "$NETPLAN_FILE" ]]; then
-  # 1) detect primary interface
-  IFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
-
-  # 2) grab current IPv4/CIDR, gateway, DNS servers
-  ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
-  GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
-  # comma‑separated list, e.g. "192.168.1.1,8.8.8.8"
-  DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd, -)
-
-  # 3) write netplan file with nameservers block
-  cat >"$NETPLAN_FILE" <<EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    $IFACE:
-      dhcp4: no
-      addresses:
-        - $ADDR
-      nameservers:
-        addresses: [${DNS}]
-      routes:
-        - to: 0.0.0.0/0
-          via: $GATEWAY
-EOF
-
-  # 4) tighten perms & apply
-  chown root:root "$NETPLAN_FILE"
-  chmod 0600     "$NETPLAN_FILE"
-  netplan apply
-
-  # 5) point resolv.conf at the right file so DNS works
-  ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
-
-  echo "🔒 Static IP + DNS locked: $ADDR on $IFACE (gw: $GATEWAY, dns: $DNS)"
+# 7) Freeze current DHCP lease as a manual NM connection
+IFACE=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $5; exit}')
+CONN=$(nmcli -t -f NAME,DEVICE connection show --active \
+       | awk -F: -v iface="$IFACE" '$2==iface{print $1; exit}')
+if [[ -z "$CONN" ]]; then
+  # fallback to first ethernet profile
+  CONN=$(nmcli -t -f NAME,TYPE connection show \
+         | awk -F: '$2=="ethernet"{print $1; exit}')
 fi
 
-# 8) Show SSH command
+if [[ "$(nmcli -g ipv4.method connection show "$CONN")" != manual ]]; then
+  IFS=$'\n' read -r IP GW DNS <<<"$(nmcli -g ipv4.addresses,ipv4.gateway,ipv4.dns connection show "$CONN")"
+  nmcli connection modify "$CONN" \
+    ipv4.method manual \
+    ipv4.addresses "$IP" \
+    ipv4.gateway   "$GW" \
+    ipv4.dns       "$DNS" \
+    connection.autoconnect yes
+  nmcli connection up "$CONN"
+  echo "🔒 Locked $CONN to manual IP $IP (gw: $GW, dns: $DNS)"
+else
+  IP=$(nmcli -g ipv4.addresses connection show "$CONN")
+  echo "✔ $CONN already manual at $IP"
+fi
+
+# 8) Show SSH connection command
+echo
 echo "=== SSH access ==="
-echo "ssh ${USER}@${ADDR}"
+echo "ssh ${USER}@${IP}"
 echo
