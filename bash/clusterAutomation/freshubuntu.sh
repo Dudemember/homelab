@@ -7,22 +7,22 @@ PASS_FILE="$(dirname "$0")/labuser.pass"
 DEVICE=/dev/sda
 MOUNTPOINT=/data
 
-# Read password
+# 0) Read labuser password
 if [[ ! -s "$PASS_FILE" ]]; then
-  echo "ERROR: password file '$PASS_FILE' not found or empty" >&2
+  echo "ERROR: missing or empty $PASS_FILE" >&2
   exit 1
 fi
-PASS="$(< "$PASS_FILE")"
+PASS=$(<"$PASS_FILE")
 
-# 1) Install SSH + parted
+# 1) Install & enable SSH, parted
 apt-get update
 apt-get install -y openssh-server parted
 systemctl enable --now ssh
 
-# 2) labuser + passwordless sudo
+# 2) Create labuser + passwordless sudo  
 if ! id "$USER" &>/dev/null; then
   useradd -m -s /bin/bash -G sudo "$USER"
-  echo "${USER}:${PASS}" | chpasswd
+  echo "$USER:$PASS" | chpasswd
 fi
 cat >/etc/sudoers.d/90_${USER} <<EOF
 ${USER} ALL=(ALL) NOPASSWD:ALL
@@ -32,35 +32,32 @@ chmod 0440 /etc/sudoers.d/90_${USER}
 # 3) Force UTC timezone
 timedatectl set-timezone UTC
 
-# 4) Disable suspend/hibernate/power‑key
+# 4) Disable sleep/hibernate/power-key
 systemctl mask sleep.target suspend.target \
                hibernate.target hybrid-sleep.target
 mkdir -p /etc/systemd/logind.conf.d
 cat >/etc/systemd/logind.conf.d/ignore-power.conf <<EOF
 [Login]
+HandlePowerKey=ignore
 HandleSuspendKey=ignore
 HandleHibernateKey=ignore
-HandlePowerKey=ignore
 HandleLidSwitch=ignore
-HandleLidSwitchDocked=ignore
 IdleAction=ignore
 EOF
 systemctl reload systemd-logind
 
-# 5) Weekly APT update & upgrade via systemd timer
-cat >/etc/systemd/system/weekly-apt-upgrade.service <<EOF
+# 5) Weekly APT update via systemd timer
+cat >/etc/systemd/system/weekly-apt.service <<EOF
 [Unit]
 Description=Weekly APT update & upgrade
 
 [Service]
 Type=oneshot
 TimeoutStartSec=1h
-Restart=no
-ExecStart=/usr/bin/apt-get update
-ExecStart=/usr/bin/apt-get -y upgrade
+ExecStart=/usr/bin/apt-get update && /usr/bin/apt-get -y upgrade
 EOF
 
-cat >/etc/systemd/system/weekly-apt-upgrade.timer <<EOF
+cat >/etc/systemd/system/weekly-apt.timer <<EOF
 [Unit]
 Description=Run weekly APT update & upgrade
 
@@ -73,12 +70,11 @@ WantedBy=timers.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now weekly-apt-upgrade.timer
+systemctl enable --now weekly-apt.timer
 
-# 6) idempotent: Partition, format & mount /dev/sda → /data
-if [ ! -b "${DEVICE}1" ]; then
-  parted -s "$DEVICE" mklabel gpt \
-         mkpart primary ext4 0% 100%
+# 6) Partition, format & mount /dev/sda → /data
+if [[ ! -b "${DEVICE}1" ]]; then
+  parted -s "$DEVICE" mklabel gpt mkpart primary ext4 0% 100%
   partprobe "$DEVICE"
   sleep 1
   mkfs.ext4 -F "${DEVICE}1"
@@ -87,25 +83,25 @@ fi
 mkdir -p "$MOUNTPOINT"
 UUID=$(blkid -s UUID -o value "${DEVICE}1")
 if ! grep -q "UUID=${UUID}" /etc/fstab; then
-  cat >>/etc/fstab <<EOF
-UUID=${UUID} ${MOUNTPOINT} ext4 defaults,nofail 0 2
-EOF
+  echo "UUID=${UUID} ${MOUNTPOINT} ext4 defaults,nofail 0 2" >>/etc/fstab
 fi
 if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
-# 7) Convert current DHCP lease into a manual NM connection
-# 1) detect outbound interface
-IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
+# 7) Snapshot DHCP lease into Netplan static config
+NETPLAN_FILE=/etc/netplan/00-installer-config.yaml
+if [[ ! -f "$NETPLAN_FILE" ]]; then
+  # detect primary interface
+  IFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
 
-# 2) snapshot current DHCP lease
-ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
-GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
-DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd, -)
+  # grab current IPv4/CIDR, gateway, DNS
+  ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
+  GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
+  DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd, -)
 
-# 3) write Netplan file
-cat >/etc/netplan/00-installer-config.yaml <<EOF
+  # write netplan file
+  cat >"$NETPLAN_FILE" <<EOF
 network:
   version: 2
   renderer: networkd
@@ -121,21 +117,14 @@ network:
           via: $GATEWAY
 EOF
 
-# 4) secure & apply
-chown root:root /etc/netplan/00-installer-config.yaml
-chmod 0600   /etc/netplan/00-installer-config.yaml
-netplan apply
-echo "📡 Static IP set: $ADDR on $IFACE (gw: $GATEWAY, dns: $DNS)"
+  # secure & apply
+  chown root:root "$NETPLAN_FILE"
+  chmod 0600     "$NETPLAN_FILE"
+  netplan apply
+  echo "🔒 Static IP locked: $ADDR on $IFACE"
+fi
 
-echo "✔ Core setup complete:
-  • SSH & labuser w/ sudo  
-  • UTC timezone  
-  • Sleep/hibernate disabled  
-  • Weekly apt timer  
-  • /dev/sda formatted & mounted at /data  
-  • Wired connection set to manual with current IP"
-
-# 8) Show SSH connection command
+# 8) Show SSH command
 IP=$(hostname -I | awk '{print $1}')
 echo
 echo "=== SSH access ==="
