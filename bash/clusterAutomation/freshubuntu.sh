@@ -106,14 +106,44 @@ if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
+# 7) Set Static IP address
+NETPLAN_FILE=/etc/netplan/01-static.yaml
+
+if [[ ! -f "$NETPLAN_FILE" ]]; then
+  # 1) detect primary iface
+  IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
+
+  # 2) grab current IP/CIDR, gateway, and DNS
+  ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
+  GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
+  DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd ',' -)
+
+  # 3) write static config
+  cat >"$NETPLAN_FILE" <<EOF
+network:
+  version: 2
+  ethernets:
+    $IFACE:
+      dhcp4: no
+      addresses: [ $ADDR ]
+      gateway4: $GATEWAY
+      nameservers:
+        addresses: [ $DNS ]
+EOF
+
+  # 4) apply immediately
+  netplan apply
+  echo "🔒 Static IP locked: $ADDR on $IFACE"
+fi
 echo "✔ Core setup complete:
   • SSH & labuser w/ sudo  
   • UTC timezone  
   • Sleep/hibernate disabled  
   • Weekly apt timer  
-  • /dev/sda formatted & mounted at /data"
+  • /dev/sda formatted & mounted at /data
+  • Set Static IP adress"
 
-# 7) Show SSH connection command
+# 8) Show SSH connection command
 IP=$(hostname -I | awk '{print $1}')
 echo
 echo "=== SSH access ==="
