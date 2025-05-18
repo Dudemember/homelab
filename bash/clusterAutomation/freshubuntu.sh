@@ -121,5 +121,5 @@ netplan apply
 # 8) Show SSH command
 echo
 echo "=== SSH access ==="
-echo "ssh ${USER}@${IP}"
+echo "ssh ${USER}@${ADDR}"
 echo
