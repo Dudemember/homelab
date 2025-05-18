@@ -3,7 +3,6 @@ set -euo pipefail
 
 # ----- Configuration -----
 USER=labuser
-# The file in the script’s directory that contains ONLY the password for $USER
 PASS_FILE="$(dirname "$0")/labuser.pass"
 DEVICE=/dev/sda
 MOUNTPOINT=/data
@@ -55,11 +54,8 @@ Description=Weekly APT update & upgrade
 
 [Service]
 Type=oneshot
-# Kill the job if it runs longer than 1 hour
 TimeoutStartSec=1h
-# Make sure we don't try to restart it on failure
 Restart=no
-
 ExecStart=/usr/bin/apt-get update
 ExecStart=/usr/bin/apt-get -y upgrade
 EOF
@@ -88,59 +84,49 @@ if [ ! -b "${DEVICE}1" ]; then
   mkfs.ext4 -F "${DEVICE}1"
 fi
 
-# ensure mountpoint exists
 mkdir -p "$MOUNTPOINT"
-
-# grab UUID
 UUID=$(blkid -s UUID -o value "${DEVICE}1")
-
-# add fstab entry if missing
 if ! grep -q "UUID=${UUID}" /etc/fstab; then
   cat >>/etc/fstab <<EOF
 UUID=${UUID} ${MOUNTPOINT} ext4 defaults,nofail 0 2
 EOF
 fi
-
-# mount if not already
 if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
-# 7) Set Static IP address
-NETPLAN_FILE=/etc/netplan/01-static.yaml
+# 7) Convert current DHCP lease into a manual NM connection
+#    (runs only once; safe to re-run)
+if ! nmcli -t -f ipv4.method connection show | grep -q manual; then
+  apt-get install -y network-manager
+  systemctl enable --now NetworkManager
 
-if [[ ! -f "$NETPLAN_FILE" ]]; then
-  # detect primary iface
+  # detect primary interface and its active connection
   IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
+  CONN=$(nmcli -t -f NAME,DEVICE connection show --active \
+         | awk -F: -v if="$IFACE" '$2==if{print $1; exit}')
 
-  # grab current IP/CIDR, gateway, and DNS
+  # fallback to the first ethernet profile if none active
+  if [[ -z "$CONN" ]]; then
+    CONN=$(nmcli -t -f NAME,TYPE connection show \
+           | awk -F: '$2=="ethernet"{print $1; exit}')
+  fi
+
+  # grab current lease info
   ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
   GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
-  DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd ',' -)
+  DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd" " -)
 
-  # write static config using 'routes:' instead of gateway4
-  cat >"$NETPLAN_FILE" <<EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    $IFACE:
-      dhcp4: no
-      addresses: [ $ADDR ]
-      routes:
-        - to: 0.0.0.0/0
-          via: $GATEWAY
-      nameservers:
-        addresses: [ $DNS ]
-EOF
+  # apply manual settings
+  nmcli connection modify "$CONN" \
+    ipv4.method manual \
+    ipv4.addresses "$ADDR" \
+    ipv4.gateway "$GATEWAY" \
+    ipv4.dns "$DNS" \
+    connection.autoconnect yes
 
-  # lock down permissions and ownership
-  chown root:root "$NETPLAN_FILE"
-  chmod 0644     "$NETPLAN_FILE"
-
-  # apply immediately
-  netplan apply
-  echo "🔒 Static IP locked: $ADDR on $IFACE"
+  nmcli connection up "$CONN"
+  echo "🔒 NM manual IP locked: $ADDR on $IFACE"
 fi
 
 echo "✔ Core setup complete:
@@ -148,8 +134,8 @@ echo "✔ Core setup complete:
   • UTC timezone  
   • Sleep/hibernate disabled  
   • Weekly apt timer  
-  • /dev/sda formatted & mounted at /data
-  • Set Static IP adress"
+  • /dev/sda formatted & mounted at /data  
+  • Wired connection set to manual with current IP"
 
 # 8) Show SSH connection command
 IP=$(hostname -I | awk '{print $1}')
