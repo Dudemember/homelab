@@ -125,8 +125,6 @@ EOF
 fi
 
 # 8) Show SSH command
-IP=$(hostname -I | awk '{print $1}')
-echo
 echo "=== SSH access ==="
-echo "ssh ${USER}@${IP}"
+echo "ssh ${USER}@${ADDR}"
 echo
