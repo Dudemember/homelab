@@ -7,7 +7,7 @@ if [[ ! -r $LOCALVARS ]]; then
   echo "ERROR: cannot read $LOCALVARS" >&2
   exit 1
 fi
-# Load variables (USER, NODES[], PASS_FILE, MY_SSH_KEY, OVERWRITE_MY_SSH_KEY)
+# Load variables (USER, NODES[], PASS_FILE, MY_SSH_KEY, MY_SSH_KEY_OVERWRITE)
 # shellcheck disable=SC1090
 source "$LOCALVARS"
 
@@ -45,13 +45,17 @@ fi
 PUB_PATH="$KEY_PATH.pub"
 
 # 2) Handle overwrite flag
-FORCE="${OVERWRITE_MY_SSH_KEY:-false}"
+FORCE="${MY_SSH_KEY_OVERWRITE:-false}"
 if [[ $FORCE == true ]]; then
-  echo "⚠️  OVERWRITE_MY_SSH_KEY=true: removing old key files"
+  echo "⚠️  MY_SSH_KEY_OVERWRITE=true: removing old key files"
   rm -f "$KEY_PATH" "$PUB_PATH"
-  # Reset the flag in localvars
-  sed -i '/^OVERWRITE_MY_SSH_KEY=/d' "$LOCALVARS"
-  printf "\nOVERWRITE_MY_SSH_KEY=false\n" >> "$LOCALVARS"
+
+  # Change the existing setting to false, or add it if missing
+  if grep -q '^MY_SSH_KEY_OVERWRITE=' "$LOCALVARS"; then
+    sed -i 's|^MY_SSH_KEY_OVERWRITE=.*|MY_SSH_KEY_OVERWRITE=false|' "$LOCALVARS"
+  else
+    printf "\nMY_SSH_KEY_OVERWRITE=false\n" >> "$LOCALVARS"
+  fi
 fi
 
 # 3) Generate key if missing
