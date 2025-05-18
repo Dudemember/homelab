@@ -110,31 +110,39 @@ fi
 NETPLAN_FILE=/etc/netplan/01-static.yaml
 
 if [[ ! -f "$NETPLAN_FILE" ]]; then
-  # 1) detect primary iface
+  # detect primary iface
   IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 
-  # 2) grab current IP/CIDR, gateway, and DNS
+  # grab current IP/CIDR, gateway, and DNS
   ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
   GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
   DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd ',' -)
 
-  # 3) write static config
+  # write static config using 'routes:' instead of gateway4
   cat >"$NETPLAN_FILE" <<EOF
 network:
   version: 2
+  renderer: networkd
   ethernets:
     $IFACE:
       dhcp4: no
       addresses: [ $ADDR ]
-      gateway4: $GATEWAY
+      routes:
+        - to: 0.0.0.0/0
+          via: $GATEWAY
       nameservers:
         addresses: [ $DNS ]
 EOF
 
-  # 4) apply immediately
+  # lock down permissions and ownership
+  chown root:root "$NETPLAN_FILE"
+  chmod 0644     "$NETPLAN_FILE"
+
+  # apply immediately
   netplan apply
   echo "🔒 Static IP locked: $ADDR on $IFACE"
 fi
+
 echo "✔ Core setup complete:
   • SSH & labuser w/ sudo  
   • UTC timezone  
