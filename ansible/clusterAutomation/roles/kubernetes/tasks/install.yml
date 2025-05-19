@@ -1,0 +1,66 @@
+- name: Install containerd
+  apt:
+    name: containerd
+    state: present
+    update_cache: yes
+  when: ansible_distribution == "Ubuntu"
+
+- name: Configure containerd
+  command: |
+    mkdir -p /etc/containerd &&
+    containerd config default > /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+  when: ansible_distribution == "Ubuntu"
+
+- name: Restart & enable containerd
+  systemd:
+    name: containerd
+    enabled: true
+    state: restarted
+  when: ansible_distribution == "Ubuntu"
+
+- name: Install Kubernetes dependencies
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    update_cache: yes
+    state: present
+  when: ansible_distribution == "Ubuntu"
+
+- name: Download the pkgs.k8s.io signing key
+  ansible.builtin.get_url:
+    url: https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key
+    dest: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    mode: '0644'
+
+- name: Add the pkgs.k8s.io repository
+  ansible.builtin.apt_repository:
+    repo: >
+      deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg]
+      https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /
+    filename: kubernetes
+    state: present
+
+- name: Install Kubernetes components
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    update_cache: yes
+    state: present
+  when: ansible_distribution == "Ubuntu"
+
+- name: Hold Kubernetes versions
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: hold
+  when: ansible_distribution == "Ubuntu"

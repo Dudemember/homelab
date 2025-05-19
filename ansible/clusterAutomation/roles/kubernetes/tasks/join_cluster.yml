@@ -1,0 +1,19 @@
+- name: Join as control-plane
+  shell: |
+    kubeadm join {{ k8s_control_plane_ip }}:{{ k8s_control_plane_port }} \
+      --token {{ k8s_token }} \
+      --discovery-token-ca-cert-hash {{ k8s_discovery_hash }} \
+      --control-plane \
+      --certificate-key {{ k8s_certificate_key }}
+  args:
+    creates: /etc/kubernetes/admin.conf
+  when: inventory_hostname in k8s_control_planes and inventory_hostname != k8s_control_planes[0]
+
+- name: Join as worker
+  shell: |
+    kubeadm join {{ k8s_control_plane_ip }}:{{ k8s_control_plane_port }} \
+      --token {{ k8s_token }} \
+      --discovery-token-ca-cert-hash {{ k8s_discovery_hash }}
+  args:
+    creates: /etc/kubernetes/kubelet.conf
+  when: inventory_hostname not in k8s_control_planes

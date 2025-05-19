@@ -1,0 +1,27 @@
+- name: Wait for rook-ceph operator to be ready
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: rook-ceph
+    label_selectors:
+      - app=rook-ceph-operator
+  register: rook_pods
+  until: rook_pods.resources | length > 0 and rook_pods.resources[0].status.phase == "Running"
+  retries: 10
+  delay: 10
+
+- name: Apply CephCluster configuration
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'files/cluster.yaml') | from_yaml }}"
+
+- name: Apply Ceph StorageClass
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('file', 'files/storageclass.yaml') | from_yaml }}"
+
+- name: Set default StorageClass
+  shell: |
+    kubectl patch storageclass rook-ceph-block \
+      -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+  args:
+    warn: false

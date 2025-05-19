@@ -1,0 +1,40 @@
+- name: Ensure new key is appended (safe)
+  lineinfile:
+    path: "/home/{{ ansible_user }}/.ssh/authorized_keys"
+    line: "{{ ansible_pub_key }}"
+    create: yes
+    state: present
+    mode: '0600'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+  when: ansible_distribution == "Ubuntu"
+
+- name: Test connection with new key (dry run)
+  local_action: shell ssh -o BatchMode=yes -i ~/.ssh/id_ed25519 {{ ansible_user }}@{{ inventory_hostname }} echo ok
+  register: key_test
+  failed_when: key_test.rc != 0
+  changed_when: false
+  when: ansible_distribution == "Ubuntu"
+
+- name: Backup authorized_keys before replacement
+  copy:
+    src: "/home/{{ ansible_user }}/.ssh/authorized_keys"
+    dest: "/home/{{ ansible_user }}/.ssh/authorized_keys.bak"
+    remote_src: yes
+  when: ansible_distribution == "Ubuntu" and key_test.rc == 0
+
+- name: Overwrite authorized_keys with only new key
+  copy:
+    content: "{{ ansible_pub_key }}"
+    dest: "/home/{{ ansible_user }}/.ssh/authorized_keys"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0600'
+  when: ansible_distribution == "Ubuntu" and key_test.rc == 0
+
+- name: Revert authorized_keys if test failed
+  copy:
+    src: "/home/{{ ansible_user }}/.ssh/authorized_keys.bak"
+    dest: "/home/{{ ansible_user }}/.ssh/authorized_keys"
+    remote_src: yes
+  when: ansible_distribution == "Ubuntu" and key_test.rc != 0

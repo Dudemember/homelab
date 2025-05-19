@@ -1,0 +1,37 @@
+# ─────────── Cluster settings ───────────
+k8s_control_plane_ip: "192.168.1.10"
+k8s_control_plane_port: 6443
+k8s_token: "abcdef.0123456789abcdef"
+k8s_discovery_hash: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+k8s_pod_subnet: "10.244.0.0/16"
+
+# ──────── Which nodes run the control‑plane ────────
+k8s_control_planes:
+  - node1
+
+# ──────── Per‑node role assignments ────────
+node_roles:
+  node1:
+    - common
+    - rotate_ssh_key
+    - kubernetes
+
+  node2:
+    - common
+    - rotate_ssh_key
+    - kubernetes
+
+  node3:
+    - common
+    - rotate_ssh_key
+    - kubernetes
+
+  node4:
+    - common
+    - rotate_ssh_key
+    - kubernetes
+
+  node5:
+    - common
+    - rotate_ssh_key
+    - kubernetes

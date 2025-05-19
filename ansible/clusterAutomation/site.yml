@@ -1,0 +1,10 @@
+- hosts: all
+  become: true
+  vars_files:
+    - config.yml
+
+  tasks:
+    - name: Execute roles assigned to this host
+      include_role:
+        name: "{{ item }}"
+      loop: "{{ node_roles[inventory_hostname] }}"
