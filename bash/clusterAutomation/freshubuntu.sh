@@ -54,7 +54,7 @@ Description=Weekly APT update & upgrade
 [Service]
 Type=oneshot
 TimeoutStartSec=1h
-ExecStart=/usr/bin/apt-get update && /usr/bin/apt-get -y upgrade
+ExecStart=/usr/bin/apt-get update -qq && /usr/bin/apt-get -y upgrade
 EOF
 
 cat >/etc/systemd/system/weekly-apt.timer <<EOF
