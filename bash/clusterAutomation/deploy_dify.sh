@@ -5,7 +5,7 @@ IFS=$'\n\t'
 # ------------------------------------------------------------------------------
 # deploy_dify.sh — SSH into your k3s master, install/upgrade Dify via Helm,
 # ensure clean proxy Service, expose on a configurable NodePort, restart it if
-# already running, and persist the UI URL in localvars.
+# already running, and persist & print the UI URL.
 # ------------------------------------------------------------------------------
 
 # 0️⃣ Load & validate localvars
@@ -19,7 +19,7 @@ source "$LOCALVARS"
 : "${OLLAMA_URL:?OLLAMA_URL must be set in localvars}"
 [[ "${#NODES[@]}" -gt 0 ]] || { echo "ERROR: NODES array must be defined in localvars" >&2; exit 1; }
 
-# 0.1️⃣ Choose NodePort (must not conflict)
+# 0.1️⃣ Pick your NodePort (defaults to 30081)
 DIFY_NODE_PORT="${DIFY_NODE_PORT:-30081}"
 
 SSH_KEY="${MY_SSH_KEY/#\~/$HOME}"
@@ -31,21 +31,21 @@ echo "→ Deploying Dify on k3s master: $MASTER"
 echo "  • Ollama endpoint: $OLLAMA_URL"
 echo "  • Exposing UI on NodePort $DIFY_NODE_PORT → port 3000"
 
-ssh "${SSH_OPTS[@]}" "${USER}@${MASTER}" sudo bash -eux <<'REMOTE_EOF'
+ssh "${SSH_OPTS[@]}" "${USER}@${MASTER}" sudo bash -eux <<REMOTE_EOF
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 NS=chatbot
 
 # 1) Ensure namespace exists
-kubectl create namespace $NS --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace \$NS --dry-run=client -o yaml | kubectl apply -f -
 
-# 2) Delete any old proxy Service
-kubectl -n $NS delete svc kubernetes-dashboard-kong-proxy --ignore-not-found
+# 2) Delete any old Dify proxy Service
+kubectl -n \$NS delete svc my-chatbot-proxy --ignore-not-found
 
 # 3) Add & update the Dify chart repo
 helm repo add dify https://borispolonsky.github.io/dify-helm >/dev/null 2>&1 || true
 helm repo update
 
-# 4) Build our values file (inject NodePort)
+# 4) Build our values file (Ollama URL & NodePort embedded)
 cat >/tmp/dify-values.yaml <<VALS
 modelProviders:
   - name: LocalDeepSeek
@@ -66,20 +66,20 @@ VALS
 
 # 5) Install or upgrade Dify
 helm upgrade --install my-chatbot dify/dify \
-  --namespace $NS --create-namespace \
+  --namespace \$NS --create-namespace \
   --values /tmp/dify-values.yaml
 
-# 6) Discover service & deployment names via labels
-SVC_NAME=$(kubectl -n $NS get svc \
+# 6) Discover service & deployment names
+SVC_NAME=\$(kubectl -n \$NS get svc \
   -l app.kubernetes.io/instance=my-chatbot,component=proxy \
-  -o jsonpath='{.items[0].metadata.name}' || echo "")
-DEPLOY_NAME=$(kubectl -n $NS get deploy \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+DEPLOY_NAME=\$(kubectl -n \$NS get deploy \
   -l app.kubernetes.io/instance=my-chatbot,component=proxy \
-  -o jsonpath='{.items[0].metadata.name}' || echo "")
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
 # 7) Patch Service to enforce NodePort
-if [[ -n "$SVC_NAME" ]]; then
-  kubectl -n $NS patch svc "$SVC_NAME" --type merge -p '{
+if [[ -n "\$SVC_NAME" ]]; then
+  kubectl -n \$NS patch svc "\$SVC_NAME" --type merge -p '{
     "spec":{
       "type":"NodePort",
       "ports":[{
@@ -95,10 +95,10 @@ else
   echo "WARNING: proxy Service not found; skipping patch"
 fi
 
-# 8) Restart & wait on the proxy deployment if it exists
-if [[ -n "$DEPLOY_NAME" ]]; then
-  kubectl -n $NS rollout restart deploy/"$DEPLOY_NAME"
-  kubectl -n $NS rollout status deploy/"$DEPLOY_NAME" --timeout=5m
+# 8) Restart & wait on the proxy deployment
+if [[ -n "\$DEPLOY_NAME" ]]; then
+  kubectl -n \$NS rollout restart deploy/"\$DEPLOY_NAME"
+  kubectl -n \$NS rollout status deploy/"\$DEPLOY_NAME" --timeout=5m
 else
   echo "WARNING: proxy Deployment not found; skipping restart/wait"
 fi
@@ -112,17 +112,8 @@ else
   echo "DIFY_URL=\"$DIFY_URL\"" >>"$LOCALVARS"
 fi
 
-# 🔟 Done!
-cat <<INFO
+# 🔟 Print it one more time so it *can’t* be missed
+echo
+echo "✅ Dify UI → $DIFY_URL"
+echo
 
-✅ Dify deployed (or upgraded) successfully!
-→ Chat UI is exposed on NodePort $DIFY_NODE_PORT:
-     https://${MASTER}:${DIFY_NODE_PORT}/  
-  (accept the self‑signed cert)
-
-→ Ollama endpoint remains:
-     $OLLAMA_URL
-
-→ UI URL saved to DIFY_URL in localvars.
-
-INFO
