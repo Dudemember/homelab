@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ----- Configuration ----- also in localvars for referance
+# ----- Configuration ----- also in localvars for reference
 USER=labuser
 PASS_FILE="$(dirname "$0")/labuser.pass"
 DEVICE=/dev/sda
@@ -14,10 +14,10 @@ if [[ ! -s "$PASS_FILE" ]]; then
 fi
 PASS=$(<"$PASS_FILE")
 
-# 1) Install & enable SSH, NetworkManager & parted
+# 1) Install & enable core services
 apt-get update
-apt-get install -y openssh-server network-manager parted
-systemctl enable --now ssh NetworkManager
+apt-get install -y openssh-server parted
+systemctl enable --now ssh
 
 # 2) Create labuser + passwordless sudo
 if ! id "$USER" &>/dev/null; then
@@ -88,15 +88,20 @@ if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
-# detect interface
+# 7) Detect interface
 IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
 
-# grab the DHCP values
-ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
-GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
-DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd, -)
+# 8) Gather IP/prefix, gateway, and up to two DNS servers
+read -r ADDR PREFIX GATEWAY DNS1 DNS2 < <(
+  # addr & prefix
+  ip -4 -o addr show dev "$IFACE" | awk '{split($4,a,"/"); print a[1], a[2]; exit}'
+  # gateway
+  ip route | awk '/^default via/ {print $3; exit}'
+  # nameservers (if any) from existing resolv.conf
+  awk '/^nameserver/ {print $2}' /etc/resolv.conf | head -n2
+)
 
-# write a single netplan file
+# 9) Write a static netplan file
 cat >/etc/netplan/00-static.yaml <<EOF
 network:
   version: 2
@@ -105,22 +110,37 @@ network:
     ${IFACE}:
       dhcp4: no
       addresses:
-        - ${ADDR}
+        - ${ADDR}/${PREFIX}
       nameservers:
-        addresses: [${DNS}]
+        addresses:
+EOF
+[[ -n "$DNS1" ]] && echo "          - ${DNS1}" >>/etc/netplan/00-static.yaml
+[[ -n "$DNS2" ]] && echo "          - ${DNS2}" >>/etc/netplan/00-static.yaml
+cat >>/etc/netplan/00-static.yaml <<EOF
       routes:
         - to: default
           via: ${GATEWAY}
 EOF
 
-# lock it down and apply
 chown root:root /etc/netplan/00-static.yaml
 chmod 0600     /etc/netplan/00-static.yaml
 netplan apply
 
-# 8) Show SSH command
+# 10) Enable & start systemd-resolved, point resolv.conf to its stub
+systemctl enable --now systemd-resolved
+ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+
+# 11) Verify DNS is assigned
+if ! resolvectl status "$IFACE" | grep -q "DNS Servers"; then
+  echo "ERROR: DNS not configured on $IFACE" >&2
+  resolvectl status
+  exit 1
+fi
+
+# 12) Final upgrades & SSH info
 apt-get update
 apt-get upgrade -y
+
 echo
 echo "=== SSH access ==="
 echo "ssh ${USER}@${ADDR}"
