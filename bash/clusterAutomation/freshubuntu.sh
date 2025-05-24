@@ -88,56 +88,11 @@ if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
-# 7) Detect interface
+# 7) Detect primary interface and IPv4 address
 IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
+ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | cut -d/ -f1)
 
-# 8) Gather IP/prefix, gateway, and up to two DNS servers
-read -r ADDR PREFIX GATEWAY DNS1 DNS2 < <(
-  # addr & prefix
-  ip -4 -o addr show dev "$IFACE" | awk '{split($4,a,"/"); print a[1], a[2]; exit}'
-  # gateway
-  ip route | awk '/^default via/ {print $3; exit}'
-  # nameservers (if any) from existing resolv.conf
-  awk '/^nameserver/ {print $2}' /etc/resolv.conf | head -n2
-)
-
-# 9) Write a static netplan file
-cat >/etc/netplan/00-static.yaml <<EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${IFACE}:
-      dhcp4: no
-      addresses:
-        - ${ADDR}/${PREFIX}
-      nameservers:
-        addresses:
-EOF
-[[ -n "$DNS1" ]] && echo "          - ${DNS1}" >>/etc/netplan/00-static.yaml
-[[ -n "$DNS2" ]] && echo "          - ${DNS2}" >>/etc/netplan/00-static.yaml
-cat >>/etc/netplan/00-static.yaml <<EOF
-      routes:
-        - to: default
-          via: ${GATEWAY}
-EOF
-
-chown root:root /etc/netplan/00-static.yaml
-chmod 0600     /etc/netplan/00-static.yaml
-netplan apply
-
-# 10) Enable & start systemd-resolved, point resolv.conf to its stub
-systemctl enable --now systemd-resolved
-ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-
-# 11) Verify DNS is assigned
-if ! resolvectl status "$IFACE" | grep -q "DNS Servers"; then
-  echo "ERROR: DNS not configured on $IFACE" >&2
-  resolvectl status
-  exit 1
-fi
-
-# 12) Final upgrades & SSH info
+# 8) Final package upgrades & SSH info
 apt-get update
 apt-get upgrade -y
 
