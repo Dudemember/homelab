@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ----- Configuration ----- also in localvars for referance
+# ----- Configuration ----- also in localvars for reference
 USER=labuser
 PASS_FILE="$(dirname "$0")/labuser.pass"
 DEVICE=/dev/sda
@@ -14,10 +14,10 @@ if [[ ! -s "$PASS_FILE" ]]; then
 fi
 PASS=$(<"$PASS_FILE")
 
-# 1) Install & enable SSH, NetworkManager & parted
+# 1) Install & enable core services
 apt-get update
-apt-get install -y openssh-server network-manager parted
-systemctl enable --now ssh NetworkManager
+apt-get install -y openssh-server parted
+systemctl enable --now ssh
 
 # 2) Create labuser + passwordless sudo
 if ! id "$USER" &>/dev/null; then
@@ -88,39 +88,14 @@ if ! mountpoint -q "$MOUNTPOINT"; then
   mount "$MOUNTPOINT"
 fi
 
-# detect interface
+# 7) Detect primary interface and IPv4 address
 IFACE=$(ip route get 1.1.1.1 | awk '{print $5; exit}')
+ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4}' | cut -d/ -f1)
 
-# grab the DHCP values
-ADDR=$(ip -4 -o addr show dev "$IFACE" | awk '{print $4; exit}')
-GATEWAY=$(ip route | awk '/^default via/ {print $3; exit}')
-DNS=$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | paste -sd, -)
-
-# write a single netplan file
-cat >/etc/netplan/00-static.yaml <<EOF
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    ${IFACE}:
-      dhcp4: no
-      addresses:
-        - ${ADDR}
-      nameservers:
-        addresses: [${DNS}]
-      routes:
-        - to: default
-          via: ${GATEWAY}
-EOF
-
-# lock it down and apply
-chown root:root /etc/netplan/00-static.yaml
-chmod 0600     /etc/netplan/00-static.yaml
-netplan apply
-
-# 8) Show SSH command
+# 8) Final package upgrades & SSH info
 apt-get update
 apt-get upgrade -y
+
 echo
 echo "=== SSH access ==="
 echo "ssh ${USER}@${ADDR}"
