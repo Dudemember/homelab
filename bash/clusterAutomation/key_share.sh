@@ -76,7 +76,6 @@ echo "$PASS"
 EOF
 
 # 5) Distribute to each node
-
 echo "🔄 Distributing public key to each node…"
 for host in "${NODES[@]}"; do
   printf " → %s: " "$host"

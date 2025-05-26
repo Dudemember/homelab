@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ------------------------------------------------------------------------------
-# install_dashboard_nodeport.sh — uninstall & install Kubernetes Dashboard on
-# the k3s master, expose its Kong proxy as NodePort 30080, force fresh images,
-# restart pods, wait for readiness, and persist the login token to localvars.
-# ------------------------------------------------------------------------------
-
 LOCALVARS=./localvars
 [[ -r $LOCALVARS ]] || { echo "ERROR: cannot read $LOCALVARS" >&2; exit 1; }
 source "$LOCALVARS"
-
 : "${USER:?USER must be set in localvars}"
 : "${MY_SSH_KEY:?MY_SSH_KEY must be set in localvars}"
+: "${MOUNTPOINT:?MOUNTPOINT must be set in localvars (e.g. /data)}"
 [[ "${#NODES[@]}" -gt 0 ]] || { echo "ERROR: NODES array must be defined in localvars" >&2; exit 1; }
 
 SSH_KEY="${MY_SSH_KEY/#\~/$HOME}"
@@ -24,69 +18,65 @@ SSH_OPTS="-i $SSH_KEY \
 
 MASTER="${NODES[0]}"
 
-echo "→ Uninstalling any existing Dashboard release on master: $MASTER"
-ssh $SSH_OPTS "${USER}@${MASTER}" sudo bash -eux <<'EOF'
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-
-# 1) Remove existing release (ignore errors if none)
-helm uninstall kubernetes-dashboard --namespace kubernetes-dashboard || true
-
-# 2) (Optional) purge namespace entirely for a clean slate
-# kubectl delete ns kubernetes-dashboard --wait || true
-
-# 3) Add/update the official Dashboard Helm repo
-helm repo add kubernetes-dashboard https://kubernetes.github.io/dashboard/ >/dev/null 2>&1 || true
-helm repo update
-
-# 4) Fresh install with NodePort & tolerations & Always pull images
-helm install kubernetes-dashboard kubernetes-dashboard/kubernetes-dashboard \
-  --namespace kubernetes-dashboard --create-namespace \
-  --set proxy.service.type=NodePort \
-  --set proxy.service.nodePort=30080 \
-  --set image.pullPolicy=Always \
-  --set tolerations[0].key="node-role.kubernetes.io/master" \
-  --set tolerations[0].operator="Exists" \
-  --set tolerations[0].effect="NoSchedule"
-
-# 5) Patch the kong‑proxy Service to ensure NodePort 30080
-kubectl patch svc kubernetes-dashboard-kong-proxy -n kubernetes-dashboard \
-  -p '{"spec":{"type":"NodePort","ports":[{"port":443,"targetPort":443,"nodePort":30080}]}}'
-
-# 6) Restart & wait for readiness of every Dashboard deployment
-for dep in $(kubectl -n kubernetes-dashboard get deployment -o name | grep -i dashboard); do
-  echo "→ Restarting $dep"
-  kubectl -n kubernetes-dashboard rollout restart "$dep"
+# 1️⃣ Pre‑req: update apt and install dependencies on every node
+for host in "${NODES[@]}"; do
+  echo "→ Installing prerequisites on $host: ${K3S_APT_DEPENDENCIES}"
+  ssh $SSH_OPTS "${USER}@${host}" sudo bash -eux <<EOF
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y ${K3S_APT_DEPENDENCIES}
+EOF
 done
 
-for dep in $(kubectl -n kubernetes-dashboard get deployment -o name | grep -i dashboard); do
-  echo "→ Waiting on $dep"
-  kubectl -n kubernetes-dashboard rollout status "$dep" --timeout=2m
+# 2️⃣ Prepare bind‑mounts on every node
+for host in "${NODES[@]}"; do
+  echo "→ Preparing data‑dir & run‑dir bind on $host"
+  ssh $SSH_OPTS "${USER}@${host}" sudo bash -eux <<EOF
+mkdir -p ${MOUNTPOINT}/k3s ${MOUNTPOINT}/k3s/run
+mkdir -p /var/lib/rancher/k3s /run/k3s
+
+# Persist fstab entries
+grep -q "${MOUNTPOINT}/k3s /var/lib/rancher/k3s" /etc/fstab \
+  || echo "${MOUNTPOINT}/k3s /var/lib/rancher/k3s none bind 0 0" >> /etc/fstab
+grep -q "${MOUNTPOINT}/k3s/run /run/k3s" /etc/fstab \
+  || echo "${MOUNTPOINT}/k3s/run /run/k3s none bind 0 0" >> /etc/fstab
+
+# Perform the bind‑mounts now
+mountpoint -q /var/lib/rancher/k3s || mount --bind ${MOUNTPOINT}/k3s /var/lib/rancher/k3s
+mountpoint -q /run/k3s                || mount --bind ${MOUNTPOINT}/k3s/run /run/k3s
+EOF
 done
 
-# 7) Ensure admin SA & ClusterRoleBinding exist
-kubectl -n kubernetes-dashboard get sa dashboard-admin-sa >/dev/null 2>&1 || \
-  kubectl -n kubernetes-dashboard create sa dashboard-admin-sa
-
-kubectl get clusterrolebinding dashboard-admin-sa >/dev/null 2>&1 || \
-  kubectl create clusterrolebinding dashboard-admin-sa \
-    --clusterrole=cluster-admin \
-    --serviceaccount=kubernetes-dashboard:dashboard-admin-sa
+# 3️⃣ Install k3s server on master, pointing at our data-dir
+echo "→ Installing k3s server on master ($MASTER)"
+ssh $SSH_OPTS "${USER}@${MASTER}" sudo bash -eux <<EOF
+export INSTALL_K3S_EXEC="server --data-dir ${MOUNTPOINT}/k3s"
+curl -sfL https://get.k3s.io | sh -
 EOF
 
-echo "→ Retrieving Dashboard login token"
-K8S_DASHBOARD_TOKEN=$(ssh $SSH_OPTS "${USER}@${MASTER}" \
-  "sudo k3s kubectl -n kubernetes-dashboard create token dashboard-admin-sa")
-echo "   • Token: $K8S_DASHBOARD_TOKEN"
-
-# Persist token to localvars
-if grep -q '^K8S_DASHBOARD_TOKEN=' "$LOCALVARS"; then
-  sed -i "s|^K8S_DASHBOARD_TOKEN=.*|K8S_DASHBOARD_TOKEN=\"$K8S_DASHBOARD_TOKEN\"|" "$LOCALVARS"
+# 4️⃣ Grab and persist the join token
+echo "→ Retrieving join token"
+TOKEN=$(ssh $SSH_OPTS "${USER}@${MASTER}" sudo cat "${MOUNTPOINT}/k3s/server/node-token")
+echo "   • Token: $TOKEN"
+if grep -q '^K3S_TOKEN=' "$LOCALVARS"; then
+  sed -i "s|^K3S_TOKEN=.*|K3S_TOKEN=\"$TOKEN\"|" "$LOCALVARS"
 else
-  echo "K8S_DASHBOARD_TOKEN=\"$K8S_DASHBOARD_TOKEN\"" >>"$LOCALVARS"
+  echo "K3S_TOKEN=\"$TOKEN\"" >>"$LOCALVARS"
 fi
-echo "   • K8S_DASHBOARD_TOKEN written to $LOCALVARS"
+echo "   • K3S_TOKEN written to $LOCALVARS"
 
-echo
-echo "✅ Dashboard is now exposed at https://$MASTER:30080/"
-echo "   (self‑signed cert — accept the warning or use: curl -k https://$MASTER:30080/)"
-echo "   Use K8S_DASHBOARD_TOKEN from localvars to log in."
+# 5️⃣ Install k3s agents on all other nodes
+for host in "${NODES[@]:1}"; do
+  echo "→ Installing k3s agent on $host"
+  ssh $SSH_OPTS "${USER}@${host}" sudo bash -eux <<EOF
+export INSTALL_K3S_EXEC="agent --data-dir ${MOUNTPOINT}/k3s"
+export K3S_URL="https://${MASTER}:6443"
+export K3S_TOKEN="${TOKEN}"
+curl -sfL https://get.k3s.io | sh -
+EOF
+done
+
+# 6️⃣ Final verification
+echo "→ Verifying cluster nodes on master"
+ssh $SSH_OPTS "${USER}@${MASTER}" sudo k3s kubectl get nodes
+
+echo "✅ k3s install complete. All state & runtime is now under ${MOUNTPOINT}/k3s."

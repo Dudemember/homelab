@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ------------------------------------------------------------------------------
-# install_dashboard_nodeport.sh — install/upgrade Kubernetes Dashboard via Helm on k3s master,
+# k3s_support.sh — install/upgrade Kubernetes Dashboard via Helm on k3s master,
 # expose the UI proxy on NodePort 30080, and persist the login token as K8S_DASHBOARD_TOKEN.
 # ------------------------------------------------------------------------------
 
@@ -38,7 +38,7 @@ helm upgrade --install kubernetes-dashboard kubernetes-dashboard/kubernetes-dash
   --set proxy.service.type=NodePort \
   --set proxy.service.nodePort=30080
 
-# 4) Safety‑net patch in case it didn’t stick
+# 4) Safety-net patch in case it didn't stick
 kubectl -n $NS patch svc kubernetes-dashboard-kong-proxy --type merge \
   -p '{"spec":{"type":"NodePort","ports":[{"port":443,"targetPort":8443,"nodePort":30080,"protocol":"TCP","name":"https"}]}}'
 
