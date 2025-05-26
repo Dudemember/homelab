@@ -4,4 +4,4 @@
 #bash ./k3s_taint_masters.sh
 #bash ./k3s_support.sh
 #bash ./deploy_ollama.sh
-bash ./deploy_dify.sh
+bash ./deploy_chat_ui.sh
